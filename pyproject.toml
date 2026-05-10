@@ -1,0 +1,26 @@
+# ============================================================
+# 项目构建与包管理配置
+# 作用：让 pip install -e . 把 src/ 注册为 Python 包
+# 效果：安装后在任何目录都能 from src.xxx import ...
+# ============================================================
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-review-agent"
+version = "0.1.0"
+description = "Multi-agent code review and auto-fix system based on LangGraph"
+requires-python = ">=3.11"
+
+[project.scripts]
+# 可执行命令入口（Streamlit 启动命令，后面阶段会用到）
+run-agent = "app.streamlit_app:main"
+
+[tool.setuptools]
+# 告诉 setuptools：包代码在 src/ 目录下
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

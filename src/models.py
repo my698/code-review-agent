@@ -1,3 +1,5 @@
+# Pydantic 数据模型与枚举 —— 定义整个系统的数据结构（Issue、ReviewResult、FinalReport 等 9 个模型 + 4 个枚举）
+
 from enum import Enum
 from typing import Optional
 
@@ -177,7 +179,7 @@ class FinalReport(BaseModel):
     """最终审查报告 — output_node 组装，整个流程的最终产出，前端直接拿它展示"""
     original_code: str                                      # 用户提交的原始代码，保留用于对比
     fixed_code: str                                         # 修复后的代码，失败时可能为空
-    issues: list[ActionItem] = Field(default_factory=list)  # 去重排序后的修复清单，复用 ActionItem
+    action_items: list[ActionItem] = Field(default_factory=list)  # 去重排序后的修复清单，复用 ActionItem
     score_before: int = 0                                   # 修复前综合评分 0-100
     score_after: int = 0                                    # 修复后预估评分，阶段四再实现
     sandbox_passed: bool = False                            # 沙箱验证是否通过
