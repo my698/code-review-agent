@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 class Severity(str, Enum):
     """问题严重程度，决定 critic 排序优先级"""
@@ -103,6 +103,12 @@ class ReviewResult(BaseModel):
     """单个审查员的完整输出，打包所有 Issue 并标记来自哪个维度"""
     dimension: ReviewDimension                           # 来自哪个审查员
     issues: list[Issue] = Field(default_factory=list)   # 该审查员发现的所有问题
+
+    @field_validator("issues", mode="before")
+    @classmethod
+    def default_issues_to_empty(cls, v: list | None) -> list:
+        """LLM 返回 null 时自动转为空列表，防止下游 critic_agent 遍历 None 爆 AttributeError"""
+        return v if v is not None else []
 
 
 # ============================================================
