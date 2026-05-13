@@ -3,6 +3,8 @@
 用法：python scripts/run.py
 """
 import sys
+import asyncio
+import time
 from pathlib import Path
 
 # 项目根目录
@@ -43,6 +45,55 @@ def process_items(items):
     return result
 """
 
+async def run_with_timing(app, config, initial_state):
+    """用 astream_events 运行工作流，记录每个节点的开始/结束时间"""
+    node_times: dict[str, float] = {}   # 节点名 → 开始时间
+    total_cost: dict[str, float] = {}   # 节点名 → 累计耗时
+
+    async def stream_until_pause(state, cfg):
+        """流式执行直到暂停或结束，返回最后 state（字典）"""
+        current_state = dict(state) if state else {}
+        async for event in app.astream_events(state, cfg, version="v2"):
+            kind = event["event"]
+            name = event.get("name", "")
+
+            if kind == "on_chain_start" and name in [
+                "code_parser", "security_reviewer", "performance_reviewer",
+                "style_reviewer", "critic_agent", "coder_agent",
+                "sandbox_executor", "reflect_node", "human_review", "output_node",
+            ]:
+                node_times[name] = time.time()
+                print(f"  ⏵ [{name}] 开始...")
+
+            elif kind == "on_chain_end" and name in node_times:
+                elapsed = time.time() - node_times.pop(name)
+                total_cost[name] = total_cost.get(name, 0) + elapsed
+                print(f"  ⏹ [{name}] 完成 ({elapsed:.1f}s)")
+
+                # 从 event output 收集 state 变更
+                output = event["data"].get("output", {})
+                if isinstance(output, dict):
+                    for k, v in output.items():
+                        if k in AgentState.__annotations__:
+                            current_state[k] = v
+
+        return current_state
+
+    # 第一轮执行
+    print("正在执行审查流程...")
+    state = await stream_until_pause(initial_state, config)
+
+    # HITL 中断检测
+    state_snapshot = app.get_state(config)
+    if state_snapshot.next:
+        print(">>> 暂停在 human_review 节点，等待人工确认...")
+        print(">>> (演示模式) 自动批准修复结果")
+        app.update_state(config, {"human_feedback": ""})
+        state = await stream_until_pause(None, config)
+
+    return state, total_cost
+
+
 if __name__ == "__main__":
     print(f"=== 代码审查 Agent 启动 ===")
     print(f"  LLM 模型: {LLM_MODEL}")
@@ -66,19 +117,33 @@ if __name__ == "__main__":
     print(SAMPLE_CODE)
     print()
 
-    # 3. 运行工作流，处理 HITL 中断
-    print("正在执行审查流程...")
-    result = app.invoke(initial_state, config)
+    # 3. 运行工作流 + 计时
+    from graph.state import AgentState
+    result, cost = asyncio.run(run_with_timing(app, config, initial_state))
 
-    # 检查是否在 human_review 前中断（LangGraph 1.1.x 中断不抛异常，需查 next）
-    state_snapshot = app.get_state(config)
-    if state_snapshot.next:
-        print(">>> 暂停在 human_review 节点，等待人工确认...")
-        print(">>> (演示模式) 自动批准修复结果")
-        app.update_state(config, {"human_feedback": ""})
-        result = app.invoke(None, config)
+    # 4. 打印并行计时总结
+    print()
+    print("=== 节点耗时统计 ===")
+    for node_name in [
+        "code_parser", "security_reviewer", "performance_reviewer",
+        "style_reviewer", "critic_agent", "coder_agent",
+        "sandbox_executor", "reflect_node", "human_review", "output_node",
+    ]:
+        if node_name in cost:
+            print(f"  {node_name:25s} {cost[node_name]:.1f}s")
+    # 并行检测：三个审查员耗时接近且小于各自之和，说明并行
+    reviewers = ["security_reviewer", "performance_reviewer", "style_reviewer"]
+    if all(r in cost for r in reviewers):
+        r_times = [cost[r] for r in reviewers]
+        total = sum(r_times)
+        max_t = max(r_times)
+        print()
+        print(f"  三审查员耗时: {r_times[0]:.1f}s / {r_times[1]:.1f}s / {r_times[2]:.1f}s")
+        print(f"  三路串行预估: {total:.1f}s  实际并行窗口: {max_t:.1f}s")
+        if max_t <= total * 0.6:
+            print(f"  ✅ 并行生效：三路几乎同时完成，省了 ~{total - max_t:.0f}s")
 
-    # 4. 输出最终报告
+    # 5. 输出最终报告
     print()
     print("=== 最终审查报告 ===")
     report = result.get("final_report")

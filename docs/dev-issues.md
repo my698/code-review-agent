@@ -1,5 +1,19 @@
 # 开发问题记录
 
+> 全量开发日志：环境配置、设计决策、运行时 bug。踩一个记一个，供自己回溯。
+> 深度 bug 分析精选见 [`dev-bug-dives.md`](./dev-bug-dives.md)。
+
+## 目录
+
+- [问题 #1：Python 包导入路径配置](#问题-1python-包导入路径配置)
+- [问题 #2：流式输出方案选择](#问题-2流式输出方案选择)
+- [问题 #3：`pip install -e .` 成功但 `import langgraph` 仍报 ModuleNotFoundError](#问题-3pip-install--e--成功但-import-langgraph-仍报-modulenotfounderror)
+- [问题 #4：`python -c` 验证导入与 `python scripts/run.py` 的差异](#问题-4python--c-验证导入与-python-scriptsrunpy-的差异)
+- [问题 #5：Send 第二个参数导致分支 state 缺少字段 —— `KeyError: 'original_code'`](#问题-5send-第二个参数导致分支-state-缺少字段--keyerror-original_code)
+- [问题 #6：HITL `interrupt_before` 中断不抛异常 —— 流程静默走完但报告未生成](#问题-6hitl-interrupt_before-中断不抛异常--流程静默走完但报告未生成)
+- [问题 #7：LLM 返回 `"issues": null` 导致 `AttributeError`](#问题-7llm-返回-issues-null-导致-attributeerror)
+- [问题 #8：LLM 返回枚举非法值导致 `ValidationError` —— 系统性加固所有枚举字段](#问题-8llm-返回枚举非法值导致-validationerror--系统性加固所有枚举字段)
+
 ---
 
 ## 问题 #1：Python 包导入路径配置
@@ -47,13 +61,6 @@
 
 - **两套机制互不冲突，导入写法完全统一。**
 
-**经验教训**：
-1. `pip install -e .` 是 Python 项目的标准可编辑安装方式，配置一次，终生受益。
-2. `.pth` 文件的作用是把指定目录加入 `sys.path`，安装后导入时不需要带父目录前缀。
-3. 所有子包目录都需要 `__init__.py`（即使是空文件），否则 setuptools 不会把它们打包进去。
-4. `pyproject.toml` 中 `build-backend` 要用主流写法 `setuptools.build_meta`，避免兼容性问题。
-5. 遇到导入问题时，先查 `sys.path` 内容（`python -c "import sys; print(sys.path)"`）和 `.pth` 文件内容，再定位原因。
-
 ---
 
 ## 问题 #2：流式输出方案选择——`stream_mode="updates"` vs `astream_events`
@@ -83,12 +90,6 @@
 2. 节点函数内部不用任何改动，只在图调用层切换
 3. LangGraph 原生支持，不引入额外依赖
 4. `version="v2"` 是 LangGraph 1.1.x 的标准事件模式
-
-**经验教训**：
-1. 流式输出选型应在设计阶段而非实现阶段做，避免后期返工
-2. `stream_mode="updates"` 适合简单场景（只需知道节点何时完成），`astream_events` 适合需要细粒度进度展示的场景
-3. `astream_events` 产生的事件量远多于 `stream_mode="updates"`，消费端必须按 `kind` 严格过滤，不能全量推给前端
-4. 三个审查节点并行执行时通过 `name` 字段区分来源，前端可分别展示各节点的实时状态
 
 ---
 
@@ -125,11 +126,6 @@ dependencies = [
 
 然后重新执行 `pip install -e .`，pip 自动安装全部依赖，问题解决。
 
-**经验教训**：
-1. `pip install -e .` 只安装 `pyproject.toml` 中声明的依赖，未声明的不装。`.pth` 路径入口和依赖安装是两件独立的事。
-2. 遇到 `ModuleNotFoundError` 时先区分：是**项目模块找不到**（路径问题）还是**第三方包找不到**（依赖声明问题），两类根因完全不同。
-3. 新项目首次配置时容易遗漏 `dependencies`，建议 `pip install -e .` 后立即 `pip list | grep langgraph` 验证核心依赖已装。
-
 ---
 
 ## 问题 #4：`python -c` 验证导入与 `python scripts/run.py` 的差异
@@ -152,11 +148,6 @@ dependencies = [
 | `python -c "from graph.builder import ..."` | 需先 `pip install -e .`（`.pth` 自动加路径） | 快速验证包是否可导入 |
 | `python scripts/run.py` | 不需要 `pip install -e .`（脚本自己加路径） | 完整运行入口 |
 
-**经验教训**：
-1. 用 `python -c` 做冒烟测试前，确认 `pip install -e .` 已执行且依赖完整。
-2. 给用户建议验证命令时，先确认用户当前环境状态（是否已 `pip install -e .`），再给对应命令。
-3. `scripts/run.py` 是最可靠的验证入口，它有独立的路径处理逻辑，不依赖 `.pth`。
-
 ---
 
 ## 问题 #5：Send 第二个参数导致分支 state 缺少字段 —— `KeyError: 'original_code'`
@@ -166,89 +157,53 @@ dependencies = [
 **错误信息**：
 ```
 KeyError: 'original_code'
-During task with name 'security_reviewer' and id '0506ac5d-981d-50fc-c205-cfed1cf1bc59'
+During task with name 'security_reviewer'
 ```
 
-**触发位置**：`src/graph/nodes.py` 第 40 行，`security_reviewer` 节点内：
-
+**触发位置**（`src/graph/nodes.py`，`security_reviewer` 内）：
 ```python
 HumanMessage(content=f"原始代码：{state['original_code']}"),
 ```
 
-**错误代码**（`src/graph/builder.py` Send 分发函数）：
+**原因**：Send 分发函数只传了 `code_analysis`，`original_code` 未传导致 KeyError。
 
+**错误代码**（`src/graph/builder.py`）：
 ```python
 def fanout_to_reviewers(state: AgentState) -> list[Send]:
     return [
-        Send("security_reviewer", {"code_analysis": state["code_analysis"]}),
+        Send("security_reviewer", {"code_analysis": state["code_analysis"]}),     # ← 只传了一个字段
         Send("performance_reviewer", {"code_analysis": state["code_analysis"]}),
         Send("style_reviewer", {"code_analysis": state["code_analysis"]}),
     ]
 ```
 
-**我们当时的错误理解**：
+**错误理解**：认为 Send 第二个参数会叠加到主 state 上，分支能自动继承主 state 其他字段。
 
-当时认为 Send 第二个参数是"覆盖/叠加到主 state 副本上"——即分支 state = 主 state（完整 13 个字段） + Send 覆盖的字段。按这个理解，只传 `code_analysis` 就够了，因为 `original_code` 会从主 state 继承过来。
-
-这个理解是错的。
-
-**排查过程**：
-
-1. `code_parser` 节点执行成功，说明入口节点的 state 是完整的（`INITIAL_STATE` + 手动 set 的 `original_code`）
-2. 错误发生在 `security_reviewer`，它是 Send 分发的目标
-3. 检查 `fanout_to_reviewers` 函数，发现三个 `Send` 都只传了 `code_analysis`，没有传 `original_code`
-4. 打印错误是 `KeyError: 'original_code'`，说明分支 state 里根本没有这个 key
-5. 得出结论：Send 分支不会自动继承主 state 的其他字段
-
-**正确理解**：
-
-**Send 的第二个参数就是目标分支的全部 state 输入。** 主 state 的其他字段不会自动带过来。目标节点需要什么字段，Send 必须全部显式传入。
+**正确理解**：**Send 第二个参数就是目标分支的全部 state 输入**。主 state 字段不会自动带过来，需要什么必须全部显式传入。
 
 ```
 错误模型：分支 state = 主 state + Send 覆盖
 正确模型：分支 state = Send 第二个参数（仅此而已）
 ```
 
-| 假设 | Send("xx", {"code_analysis": ...}) | 分支能读到 original_code? |
-|------|------|:---:|
-| 错误理解 | 主state + code_analysis 覆盖 | ✅ 能（从主 state 继承） |
-| 实际行为 | 分支 state **只有** code_analysis | ❌ 不能（没传就没有） |
-
-**为什么会有错误理解**：
-
-直觉上 LangGraph 的 state 是所有节点共享的，以为 Send 只是在共享 state 上临时修改一下传给分支。实际上 Send 是为每个分支创建独立的 state 副本，副本的初始内容由 Send 第二个参数决定，不继承主 state。
-
-**修复后的代码**：
-
+**修复代码**（`src/graph/builder.py`）：
 ```python
 def fanout_to_reviewers(state: AgentState) -> list[Send]:
     return [
         Send("security_reviewer", {
             "code_analysis": state["code_analysis"],
-            "original_code": state["original_code"],   # 必须显式传
+            "original_code": state["original_code"],   # ← 新增：必须显式传
         }),
         Send("performance_reviewer", {
             "code_analysis": state["code_analysis"],
-            "original_code": state["original_code"],
+            "original_code": state["original_code"],   # ← 同上
         }),
         Send("style_reviewer", {
             "code_analysis": state["code_analysis"],
-            "original_code": state["original_code"],
+            "original_code": state["original_code"],   # ← 同上
         }),
     ]
 ```
-
-**`return` 的行为不受影响**：
-
-节点 `return` 的字典仍然会合并回主 state。这个理解始终正确。
-
-**经验教训**：
-
-1. Send 第二个参数不是"覆盖"，是目标分支的**全部 state 输入**。一个字段都不少。
-2. 设计阶段对 API 的理解必须经过实际运行验证，不能单靠直觉和推理。
-3. 如果错误发生在 Send 目标节点中且是 KeyError，优先怀疑 Send 传参不完整。
-4. `Send("xx", {})` 传空字典，目标分支拿到的就是空 state，读任何字段都会 KeyError。空字典不是"用主 state"的意思。
-5. 语法笔记中保留错误记录 + 纠正记录，对比学习比覆盖更有价值。
 
 ---
 
@@ -256,8 +211,7 @@ def fanout_to_reviewers(state: AgentState) -> list[Send]:
 
 **日期**：2026-05-11
 
-**错误现象**：
-运行 `python scripts/run.py`，控制台输出：
+**错误现象**：运行 `python scripts/run.py`，无报错，但 `final_report` 为 `None`，`status` 为 `"running"`。
 
 ```
 正在执行审查流程...
@@ -266,100 +220,34 @@ def fanout_to_reviewers(state: AgentState) -> list[Send]:
 报告未生成，请检查上游流程
 ```
 
-没有报错，没有异常，但 `final_report` 为 `None`，`status` 为 `"running"`。
-
-**当时的错误代码**（`scripts/run.py`）：
-
+**错误代码**（`scripts/run.py`）：
 ```python
 # 错误：以为 interrupt_before 会抛异常
 try:
     result = app.invoke(initial_state, config)
-except Exception:
-    # HITL 中断，注入审批意见后恢复
-    print(">>> 暂停在 human_review 节点...")
+except Exception:                                          # ← 永远抓不到
     app.update_state(config, {"human_feedback": ""})
     result = app.invoke(None, config)
 ```
 
-**排查过程**：
+**根因**：LangGraph 的 `interrupt_before` 中断**不抛异常**，`invoke()` 在断点处静默返回当前 state。`except Exception` 抓不到，代码直接跑去读 `final_report`，此时 `output_node` 还没执行，自然是 `None`。
 
-1. 加了调试日志打印 `result` 中所有 key 的值，发现 `code_analysis`、`review_results`、`critic_summary`、`coder_result`、`sandbox_result` 全部正常输出（说明 `code_parser` → 审查员 → `critic_agent` → `coder_agent` → `sandbox_executor` 全线跑通）
-2. 但 `final_report` 是 `None`，`status` 是 `"running"`
-3. `except` 里的打印没有出现，说明 `invoke` 没有抛异常
-4. 即 `interrupt_before` 在 `human_review` 前暂停了，但**不抛异常**，`invoke` 静默返回当前 state
-5. 代码没意识到已经中断，直接跑去读 `final_report`，此时 `output_node` 还没执行，当然是 `None`
+**核心机制**：`interrupt_before` 不是崩溃，而是把当前 state 写入 checkpointer（MemorySaver），然后让 `invoke()` 正常返回。调用方需要主动通过 `app.get_state(config).next` 检查是否真的完成：
 
-**根因**：
+| `next` 值 | 含义 |
+|-----------|------|
+| `()` 空元组 | 工作流已完全结束 |
+| `('human_review',)` 等 | 中断在对应节点前，需 resume |
 
-**LangGraph 1.1.x 的 `interrupt_before` 中断不抛异常。** `app.invoke()` 在断点处静默返回当前 state（就像正常完成一样），不发出任何信号告诉你"我还没跑完"。`except Exception` 抓了个寂寞。
-
-这与我们最初的假设相反。之前我们想当然地认为"中断 = 抛异常"，所以设计了 `try/except` 来捕获并处理。实际上 LangGraph 的中断机制是让 `invoke` 正常返回，然后通过 `app.get_state(config).next` 让调用方主动检查是否真的完成。
-
-**正确做法**：
-
+**修复代码**（`scripts/run.py`）：
 ```python
-# 1. 正常执行，不管是否中断都返回当前 state
 result = app.invoke(initial_state, config)
 
-# 2. 检查是否真的完成了（next 非空 = 还有节点待执行 = 中断了）
 state_snapshot = app.get_state(config)
-if state_snapshot.next:
-    # 中断了，注入 human_feedback 后恢复
-    print(">>> 暂停在 human_review 节点...")
+if state_snapshot.next:                                   # ← 新增：检查是否真完成
     app.update_state(config, {"human_feedback": ""})
     result = app.invoke(None, config)
-
-# 3. 现在 result 里 final_report 一定有值
 ```
-
-**`app.get_state(config).next` 的含义**：
-
-| `next` 值 | 含义 | 
-|-----------|------|
-| `()` 空元组 | 工作流已完全结束，没有待执行节点 |
-| `('human_review',)` | 中断在 `human_review` 前，该节点待执行 |
-| 其他非空值 | 中断在其他位置 |
-
-#详细解析
- ---                                                                   
-  第一层：interrupt_before 做了什么
-                                                                        
-  编译图时传了 interrupt_before=["human_review"]，LangGraph 在执行到
-  human_review 节点之前主动暂停。它不是崩溃、不是报错，而是把当前 state 
-  写入 checkpointer（MemorySaver），然后让 invoke() 正常返回。所以
-  invoke() 不抛异常——对它来说"暂停"和"跑完"都是正常结束。               
-                  
-  ---                                                                   
-  第二层：get_state(config).next 怎么区分"暂停"和"跑完"
-                                                                        
-  app.get_state(config) 通过 thread_id 去 checkpointer
-  里查这个流程的快照（StateSnapshot），快照里有一个字段叫               
-  next，记录的是还有哪些节点排队等着执行：
-                                                                        
-  ┌───────────────────┬──────────────────────────────────────────────┐  
-  │      next 值      │                     含义                     │
-  ├───────────────────┼──────────────────────────────────────────────┤  
-  │ () 空元组         │ 所有节点都执行完了，没有排队                 │
-  ├───────────────────┼──────────────────────────────────────────────┤  
-  │ ('human_review',) │ 有节点在排队 → 说明被 interrupt_before       │  
-  │                   │ 拦住了                                       │  
-  └───────────────────┴──────────────────────────────────────────────┘  
-                                                                        
-  所以 if state_snapshot.next                                           
-  等价于问："还有人在排队吗？"——有，就是中断了；没有，就是真跑完了。
-                                                                        
-  ---             
-  一句话总结：invoke() 不告诉你"我暂停了"，它只把 state
-  写盘就下班。你得自己查 checkpointer                                   
-  里的排队名单（.next），名单非空就说明流程被挂起了，需要注入
-  human_feedback 再 invoke(None) 继续跑。
-
-**经验教训**：
-
-1. **不要假设异常 = 中断。** LangGraph 的 `interrupt_before` 是静默暂停，`invoke` 正常返回当前 state。中断检测必须用 `app.get_state(config).next`。
-2. **`interrupt_before` 和异常是完全不同的机制。** 前者是 LangGraph 设计的中断点，后者是代码执行错误。我们用 `except Exception` 去接中断点，根本对不上号。
-3. 调试流程卡住时，优先 dump `result` 的完整 state，看哪些字段有值、哪些是 None。关键线索藏在 state 里。
-4. `checkpointer=MemorySaver()` 让 `get_state(config)` 能通过 `thread_id` 找回中断的 state，没有 checkpointer 中断状态无法持久化。
 
 ---
 
@@ -370,78 +258,108 @@ if state_snapshot.next:
 **错误信息**：
 ```
 AttributeError: 'NoneType' object has no attribute 'issues'
-During task with name 'critic_agent' and id 'b8100fee-6657-6995-6342-12a6664da40a'
+During task with name 'critic_agent'
 ```
 
-**触发代码**（`src/graph/nodes.py` 第 69 行，`critic_agent` 内部）：
-
+**触发代码**（`src/graph/nodes.py`，`critic_agent` 内）：
 ```python
 for r in state['review_results']:
     for issue in r.issues:   # ← r.issues 是 None，遍历崩溃
-        issues_text.append(...)
 ```
 
-**根因分析**：
+**原因**：`ReviewResult` 中 `issues: list[Issue] = Field(default_factory=list)`，`default_factory` 只在"字段缺失"时生效。LLM 在 JSON 中写了 `"issues": null`，Pydantic 将 `null`（Python `None`）当作合法值直接赋值，跳过 default_factory。
 
-`ReviewResult` 的 `issues` 字段定义：
+```
+不传 "issues"     → default_factory 生效 → issues = []      ✅
+传 "issues": null  → Pydantic 赋 None   → issues = None     ❌
+传 "issues": [...]  → Pydantic 赋列表    → issues = [...]    ✅
+```
 
+**修复代码**（`src/models.py`，`ReviewResult` 模型）：
 ```python
 class ReviewResult(BaseModel):
     issues: list[Issue] = Field(default_factory=list)
+
+    @field_validator("issues", mode="before")              # ← 新增
+    @classmethod                                           # ← 新增
+    def default_issues_to_empty(cls, v: list | None) -> list:  # ← 新增
+        return v if v is not None else []                  # ← 新增：null → []
 ```
 
-`default_factory=list` 的作用是：**当创建 ReviewResult 时未传 `issues` 字段，自动赋 `[]`。** 但这里的问题不是"不传"，而是 LLM 在 JSON 里写了 `"issues": null`。
+在模型层拦截 `null` 而非在下游节点的 `for` 循环处加 `if` 保护——模型是数据入口，脏数据从这里拦下，所有下游节点受益。
 
+---
+
+## 问题 #8：LLM 返回枚举非法值导致 `ValidationError` —— 系统性加固所有枚举字段
+
+**日期**：2026-05-13
+
+**错误信息**：
 ```
-Pydantic 的行为：
-  不传 "issues"     → default_factory 生效 → issues = []      ✅
-  传 "issues": null  → Pydantic 赋 None   → issues = None     ❌
-  传 "issues": [...]  → Pydantic 赋列表    → issues = [...]    ✅
-```
-
-`null` 在 JSON 中是一个明确的值（等价于 Python 的 `None`），Pydantic 收到 `None` 后**跳过 default_factory**，直接赋值 `None`。`critic_agent` 遍历 `None` 就爆了 `AttributeError`。
-
-**为什么 LLM 会返回 `null`**：
-
-审查员可能认为代码没问题（no issues found），于是 JSON 输出：
-```json
-{"dimension": "performance", "issues": null}
+ValidationError: 2 validation errors for ReviewResult
+issues.2.category  Input should be '注入', '敏感信息', ... [input_value='安全']
+issues.3.category  Input should be '注入', '敏感信息', ... [input_value='资源管理']
+During task with name 'style_reviewer'
 ```
 
-LLM 的逻辑是"没有问题，所以省略列表"。但 Pydantic 把 `null` 当成合法值收下了。
+**原因**：`style_reviewer` 节点中 LLM 给 `category` 返回了枚举外的值。`"安全"` 是 ReviewDimension 的值（LLM 搞混了），`"资源管理"` 是枚举里根本不存在的词。
 
-**修复方案**：在 `ReviewResult` 模型层加 `field_validator`，任何输入（包括 `null`）强制转为空列表。
+**系统性排查**：LLM 通过 `with_structured_output` 输出的所有枚举字段都有越界风险，共 4 模型 7 字段：
 
-**修复代码**（`src/models.py`）：
+| # | 模型 | 字段 | 枚举 | 输出节点 |
+|---|------|------|------|---------|
+| 1 | `Issue` | `severity` | `Severity`（4 种） | 三个审查员 |
+| 2 | `Issue` | `category` | `IssueCategory`（17 种） | 三个审查员 |
+| 3 | `ReviewResult` | `dimension` | `ReviewDimension`（3 种） | 三个审查员 |
+| 4 | `ActionItem` | `severity` | `Severity`（4 种） | `critic_agent` |
+| 5 | `ActionItem` | `category` | `IssueCategory`（17 种） | `critic_agent` |
+| 6 | `ActionItem` | `dimension` | `ReviewDimension`（3 种） | `critic_agent` |
+| 7 | `ReflectionResult` | `failure_type` | `FailureType`（4 种） | `reflect_node` |
+
+**分两类处理**：
+
+**第一类（5 个字段）— LLM 有判断权但可能写错，加 `field_validator` 兜底：**
+
+| 字段 | fallback |
+|------|----------|
+| `Issue.severity`、`ActionItem.severity` | `MEDIUM` |
+| `Issue.category`、`ActionItem.category` | `"其他"` |
+| `ReflectionResult.failure_type` | `LOGIC_ERROR` |
+
+**修改代码**（以 `Issue.severity` 为例）：
 
 ```python
-from pydantic import BaseModel, Field, field_validator
+class Issue(BaseModel):
+    severity: Severity                      # 修改前：无保护
 
-class ReviewResult(BaseModel):
-    dimension: ReviewDimension
-    issues: list[Issue] = Field(default_factory=list)
-
-    @field_validator("issues", mode="before")
-    @classmethod
-    def default_issues_to_empty(cls, v: list | None) -> list:
-        """LLM 返回 null 时自动转为空列表，防止下游遍历 None 爆 AttributeError"""
-        return v if v is not None else []
+    @field_validator("severity", mode="before")  # ← 新增
+    @classmethod                                 # ← 新增
+    def unknown_severity_fallback(cls, v):       # ← 新增
+        try:                                     # ← 新增
+            return Severity(v) if isinstance(v, str) else v
+        except ValueError:                       # ← 新增
+            return Severity.MEDIUM               # ← 新增：非法值兜底
 ```
 
-- `mode="before"` — 在类型校验**之前**运行，拿到的是 LLM 返回的原始值（可能是 `None`）
-- `v if v is not None else []` — 原始值有内容就直接用，是 `None` 就返回 `[]`
-- `@classmethod` — `field_validator` 要求被装饰函数是类方法
+（`Issue.category`、`ActionItem`、`ReflectionResult` 同结构，fallback 分别为 `IssueCategory.OTHER`、`FailureType.LOGIC_ERROR`）
 
-**为什么改模型层而不是消费节点**：
+**第二类（2 个字段）— `dimension` 不应让 LLM 填：**
 
-| 方案 | 改动位置 | 影响范围 | 评价 |
-|------|---------|---------|------|
-| `critic_agent` 加 `if r.issues` 保护 | `nodes.py` | 仅 `critic_agent` | 治标，其他节点未来读 `issues` 也可能踩坑 |
-| `field_validator` 在模型层拦截 | `models.py` | 所有下游节点 | 治本，数据进系统时已净化 |
+- `ReviewResult.dimension`：节点知自身身份，**节点内硬覆盖**：
+  ```python
+  # security_reviewer 内（修改后新增一行）
+  result.dimension = ReviewDimension.SECURITY
+  ```
+  （`performance_reviewer` → `PERFORMANCE`，`style_reviewer` → `STYLE`）
 
-**经验教训**：
-
-1. **`default_factory=list` 不防 `null`。** 它的作用域是"字段缺失"，不是"字段为 null"。LLM 显式输出 `null` 会绕过 default_factory。
-2. **不信任 LLM 的输出格式。** 即使 Pydantic 模型有默认值和类型声明，LLM 仍然可能返回不符合预期的值（`null` 代替空列表、数字写成字符串等）。关键字段加 `field_validator` 做防御。
-3. **数据清洗放在模型层，不在业务节点。** 模型是数据入口，脏数据从这里拦下后所有下游节点都受益。
-4. `field_validator` 的 `mode="before"` vs `mode="after"` 区别：`before` 在类型校验前运行，适合处理原始值转换；`after` 在校验后运行，适合对已确认类型的值做进一步约束。
+- `ActionItem.dimension`：critic 去重合并后语义模糊且下游未消费，**直接删除该字段**。
+  ```python
+  class ActionItem(BaseModel):
+      priority: int
+      severity: Severity
+      category: IssueCategory
+      # dimension: ReviewDimension   ← 删除
+      description: str
+      lineno: int
+      fix_instruction: str
+  ```

@@ -98,6 +98,22 @@ class Issue(BaseModel):
     estimated_impact: Optional[str] = None     # [性能专用] 预估性能影响，如 "从 3s 降至 0.1s"
     pep8_ref: Optional[str] = None             # [风格专用] 违反的 PEP 8 条目，如 "E501"=行太长
 
+    @field_validator("severity", mode="before")
+    @classmethod
+    def unknown_severity_fallback(cls, v):
+        try:
+            return Severity(v) if isinstance(v, str) else v
+        except ValueError:
+            return Severity.MEDIUM
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def unknown_category_fallback(cls, v):
+        try:
+            return IssueCategory(v) if isinstance(v, str) else v
+        except ValueError:
+            return IssueCategory.OTHER
+
 
 class ReviewResult(BaseModel):
     """单个审查员的完整输出，打包所有 Issue 并标记来自哪个维度"""
@@ -120,10 +136,25 @@ class ActionItem(BaseModel):
     priority: int                    # 修复优先级，从 1 开始编号，1 = 最先修
     severity: Severity               # 严重程度，来源 Issue 原样保留
     category: IssueCategory          # 问题分类，来源 Issue 原样保留
-    dimension: ReviewDimension       # 来源审查员，coder 可据此调整修复侧重点
     description: str                 # 需要修改什么，用自然语言说清楚
     lineno: int                      # 问题所在行号
     fix_instruction: str             # 具体怎么改的指令，必须能让 coder 直接执行
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def unknown_severity_fallback(cls, v):
+        try:
+            return Severity(v) if isinstance(v, str) else v
+        except ValueError:
+            return Severity.MEDIUM
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def unknown_category_fallback(cls, v):
+        try:
+            return IssueCategory(v) if isinstance(v, str) else v
+        except ValueError:
+            return IssueCategory.OTHER
 
 
 class CriticSummary(BaseModel):#一份原始代码文件对应一份CriticSummary，但又三份ReviewResult
@@ -175,6 +206,14 @@ class ReflectionResult(BaseModel):
     root_cause: str                # 哪处修改导致了失败，点出具体的 ChangeItem
     new_strategy: str              # 调整后的修复思路，coder_agent 重试时参考
     should_revert: bool = False    # 是否应该回退某处修改
+
+    @field_validator("failure_type", mode="before")
+    @classmethod
+    def unknown_failure_type_fallback(cls, v):
+        try:
+            return FailureType(v) if isinstance(v, str) else v
+        except ValueError:
+            return FailureType.LOGIC_ERROR
 
 
 # ============================================================

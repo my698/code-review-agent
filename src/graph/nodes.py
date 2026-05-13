@@ -39,6 +39,7 @@ def security_reviewer(state: AgentState)->dict:
         SystemMessage(content = "你是一个资深安全审计专家,专查注入漏洞、敏感信息泄露、加密缺陷、权限问题。"),
         HumanMessage(content = f"代码结构：{state['code_analysis']}\n\n原始代码：{state['original_code']}"),
     ])
+    result.dimension = ReviewDimension.SECURITY
     return {"review_results" : [result]}
 
 def performance_reviewer(state: AgentState)->dict:
@@ -48,6 +49,7 @@ def performance_reviewer(state: AgentState)->dict:
         SystemMessage(content = "你是一个资深性能优化专家，专查时间复杂度、空间浪费、冗余IO、重复计算"),
         HumanMessage(content = f"代码结构：{state['code_analysis']}\n\n原始代码：{state['original_code']}"),
     ])
+    result.dimension = ReviewDimension.PERFORMANCE
     return {"review_results" : [result]}
     
 def style_reviewer(state: AgentState) -> dict:
@@ -57,6 +59,7 @@ def style_reviewer(state: AgentState) -> dict:
         SystemMessage(content="你是资深Python代码规范专家，专查命名、PEP 8、类型注解、注释质量。"),
         HumanMessage(content=f"代码结构：{state['code_analysis']}\n\n原始代码：{state['original_code']}"),
     ])
+    result.dimension = ReviewDimension.STYLE
     return {"review_results": [result]}
 
 def critic_agent(state: AgentState)->dict:
