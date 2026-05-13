@@ -37,7 +37,7 @@ code_parser → Send API → [security, performance, style] (parallel reviews)
 - `src/graph/nodes.py` — All 10 node functions. Imports models as single `from models import (...)` block. `reflect_node` creates its own `ChatDeepSeek(temperature=0.3)` instead of using the global `llm` (0.1).
 - `src/graph/builder.py` — Conditional edge routing functions + `build_graph()`.
 - `scripts/run.py` — Entry point that injects `src/` into `sys.path` before any imports.
-- `docs/` — 6 design docs: `requirements.md`, `state-design.md`, `agents-design.md`, `models-design.md`, `graph-design.md`, `dev-issues.md`
+- `docs/` — 6 design docs: `requirements.md`, `state-design.md`, `agents-design.md`, `models-design.md`, `graph-design.md`, `dev-log.md`
 
 ## Tech stack
 

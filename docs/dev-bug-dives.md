@@ -1,7 +1,7 @@
-# 典型 Bug 深度分析
+# Bug 记录
 
-> 从 `dev-issues.md` 中精选。每篇记录一个非显而易见的 bug：错误现象 → 错误假设 → 根因 → 修复 → 经验。
-> 适合面试展示、技术复盘。
+> 记录从框架搭建完毕，开始测试以后出现的所有bug：错误现象 → 错误假设 → 根因 → 修复 → 经验。
+
 
 ## 目录
 
@@ -9,6 +9,7 @@
 - [问题 #2：HITL `interrupt_before` 中断不抛异常 —— 流程静默走完但报告未生成](#问题-2hitl-interrupt_before-中断不抛异常--流程静默走完但报告未生成)
 - [问题 #3：LLM 返回 `"issues": null` 导致 `AttributeError`](#问题-3llm-返回-issues-null-导致-attributeerror)
 - [问题 #4：LLM 返回枚举非法值导致 `ValidationError` —— 系统性加固所有枚举字段](#问题-4llm-返回枚举非法值导致-validationerror--系统性加固所有枚举字段)
+- [问题 #5：`with_structured_output` 返回 `None` 导致 `AttributeError` —— 全链路 None 保护](#问题-5with_structured_output-返回-none-导致-attributeerror--全链路-none-保护)
 
 ---
 
@@ -409,3 +410,116 @@ result.dimension = ReviewDimension.STYLE
 3. **不是所有枚举字段都适合加 fallback。** 像 `dimension` 这种"确定性已知"的信息，应该从源头硬赋值，不让 LLM 参与。加 fallback 是防守，让 LLM 不要填才是进攻。
 4. **枚举越界和 `null`（问题 #3）同属"LLM 输出不可信"这一类问题。** 同一种防御方法（`field_validator(mode="before")`）可以解决，区别在于 null→空值的处理用 `or` 逻辑，枚举越界用 `try/except ValueError`。
 5. **字段的价值要结合架构全局评估，不能只看注释。** `ActionItem.dimension` 注释说"coder 可据此调整修复侧重点"，但实际代码从未消费它，且 critic 去重后该字段语义天然模糊。这种"看起来有用、实际没用"的字段删掉比修更干净。
+
+---
+
+## 问题 #5：`with_structured_output` 返回 `None` 导致 `AttributeError` —— 全链路 None 保护
+
+**日期**：2026-05-13
+
+**错误信息**：
+```
+AttributeError: 'NoneType' object has no attribute 'dimension'
+During task with name 'style_reviewer' and id 'd0b1d507-533a-96a7-5478-d9c6fd93e976'
+```
+
+**触发位置**：`src/graph/nodes.py` 第 62 行，`style_reviewer` 节点：
+
+```python
+result = structured_llm.invoke([...])
+result.dimension = ReviewDimension.STYLE  # ← result 是 None，炸
+```
+
+**错误假设**：
+
+问题 #3 和 #4 加完 `field_validator` 后，以为 LLM 结构化输出已经安全了。实际上 `field_validator` 只保护**模型构造成功后字段值非法**的情况，但 LLM 返回完全无法解析的 JSON 时，连模型都构造不出来，`invoke()` 直接返回 `None`。
+
+两者是不同层级的防御：
+
+```
+LLM 返回 → with_structured_output 解析
+  ├── 成功 → 模型对象 → field_validator 检查字段 ✅ (问题 #3, #4 已修)
+  └── 失败 → 返回 None → 完全无保护 ❌ (本次炸点)
+```
+
+**根因**：`with_structured_output` 在以下情况会返回 `None` 而非抛异常：
+
+1. LLM 返回了无法解析为 JSON 的文本（如纯自然语言拒绝回答）
+2. LLM 返回了合法 JSON 但缺少必填字段，Pydantic 构造失败被吞掉
+3. DeepSeek API 的 function calling 模式下，模型未返回 tool_call 而是返回了普通消息
+
+LangChain 的 `with_structured_output` 在解析失败时不会抛异常，而是降级返回 `None`，调用方需自行判断。
+
+**攻击面排查** — `nodes.py` 中 **所有 7 个 `structured_llm.invoke()` 调用点** 均无 None 保护：
+
+| # | 节点 | 炸点 |
+|---|------|------|
+| 1 | `code_parser` | `analysis` 为 None → 下游 `state['code_analysis'].functions` AttributeError |
+| 2 | `security_reviewer` | `result` 为 None → `result.dimension` AttributeError |
+| 3 | `performance_reviewer` | 同上 |
+| 4 | `style_reviewer` | 同上 ← 本次触发 |
+| 5 | `critic_agent` | `summary` 为 None → 下游 `state['critic_summary'].action_plan` AttributeError |
+| 6 | `coder_agent` | `result` 为 None → 下游 `state['coder_result'].fixed_code` AttributeError |
+| 7 | `reflect_node` | `reflection` 为 None → `reflection.new_strategy` AttributeError |
+
+此外，`coder_agent`、`sandbox_executor`、`reflect_node` 三个节点直接访问 `state['key'].field` 而不检查上游可能传入了 None，也需要补齐**消费端守卫**。
+
+**修复**：
+
+一、每个 LLM 调用点加调用后守卫（7 处），以 `style_reviewer` 为例：
+
+```python
+# 修改前
+result = structured_llm.invoke([...])
+result.dimension = ReviewDimension.STYLE  # ← 炸
+
+# 修改后
+result = structured_llm.invoke([...])
+if result is None:
+    return {"review_results": []}         # ← 空列表，adder reducer 安全
+result.dimension = ReviewDimension.STYLE
+```
+
+不同节点的 fallback 策略：
+
+| 节点 | LLM 返回 None 时的处理 |
+|------|----------------------|
+| `code_parser` | 返回空 `CodeAnalysis()` —— 所有字段有默认值，下游安全 |
+| 三个审查员 | 返回 `{"review_results": []}` —— adder reducer 追加空列表无影响 |
+| `critic_agent` | 返回 `{}` —— 不更新 state |
+| `coder_agent` | 返回 `{}` —— 不更新 state |
+| `reflect_node` | 返回默认反思文本 + `retry_count+1` |
+
+二、消费端加输入守卫（3 处）：
+
+```python
+# coder_agent —— 上游 critic_agent 可能返回 {}
+critic = state.get('critic_summary')
+if critic is None:
+    return {}
+
+# sandbox_executor —— 上游 coder_agent 可能返回 {}
+coder = state.get('coder_result')
+if coder is None:
+    return {'sandbox_result': SandboxResult(exit_code=-1, stderr='修复代码为空', passed=False)}
+
+# reflect_node —— 上游 coder_agent 可能返回 {}
+coder = state.get('coder_result')
+if coder is not None:
+    for ref in coder.changes:
+        ...
+```
+
+**为什么是间歇性 bug**：
+
+同样的代码（`import requests` + 硬编码密钥），第一次运行 `style_reviewer` 的 LLM 返回了无法解析的内容导致 `None`，第二次运行就正常。说明 LLM 输出质量本身就有随机性，None 保护不是"修一次就好"，而是"防止下一次随机发生"。
+
+**经验教训**：
+
+1. **`field_validator` 和 None 守卫是两层防御，缺一不可。** field_validator 防字段越界，None 守卫防模型构造失败。前者解决不了后者的问题，因为 None 根本就没有字段可供 validator 检查。
+
+2. **所有 LLM 结构化输出调用点都要加 None 守卫，无一例外。** 7 个调用点中只要漏一个，那个就是定时炸弹。间歇性 bug 可能在 100 次运行中只触发 1 次，但触发时整条流水线崩溃。
+
+3. **生产者加守卫不够，消费者也要加。** `critic_agent` 返回 `{}` 后，`coder_agent` 如果直接用 `state['critic_summary'].action_plan` 依然会炸。数据流的每一跳都要防御。
+
+4. **间歇性 bug 才最危险。** 不是"会不会炸"而是"什么时候炸"——LLM 输出的随机性决定了这个 bug 随时可能在任何一次运行中出现。

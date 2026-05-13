@@ -21,28 +21,15 @@ from graph.state import INITIAL_STATE
 
 # 测试用示例代码 —— 故意放了几个问题（硬编码密钥、pickle 反序列化、裸 except、无类型注解）
 SAMPLE_CODE = """
-import pickle
+def compute(expression, x):
+    return eval(expression)
 
-API_SECRET = "sk-abc123def456"
+def run_task(code_str):
+    exec(code_str)
 
-def load_user_data(filename):
-    f = open(filename, "rb")
-    data = pickle.load(f)
-    f.close()
-    return data
-
-def divide(a, b):
-    try:
-        result = a / b
-    except:
-        result = 0
-    return result
-
-def process_items(items):
-    result = []
-    for i in range(len(items)):
-        result.append(items[i].upper() + str(i))
-    return result
+def load_data(byte_str):
+    import pickle
+    return pickle.loads(byte_str)
 """
 
 async def run_with_timing(app, config, initial_state):

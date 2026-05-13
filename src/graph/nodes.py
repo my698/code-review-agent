@@ -30,6 +30,8 @@ def code_parser(state: AgentState)->dict:
         SystemMessage(content = "你是一个代码结构分析专家，只做客观的结构提取，不给审查意见。"),
         HumanMessage(content = f"请分析一下代码结构：\n\n\n```{state['original_code']}```\n"),
     ])
+    if analysis is None:
+        analysis = CodeAnalysis()
     return {"code_analysis" : analysis}
 
 def security_reviewer(state: AgentState)->dict:
@@ -39,6 +41,8 @@ def security_reviewer(state: AgentState)->dict:
         SystemMessage(content = "你是一个资深安全审计专家,专查注入漏洞、敏感信息泄露、加密缺陷、权限问题。"),
         HumanMessage(content = f"代码结构：{state['code_analysis']}\n\n原始代码：{state['original_code']}"),
     ])
+    if result is None:
+        return {"review_results": []}
     result.dimension = ReviewDimension.SECURITY
     return {"review_results" : [result]}
 
@@ -49,6 +53,8 @@ def performance_reviewer(state: AgentState)->dict:
         SystemMessage(content = "你是一个资深性能优化专家，专查时间复杂度、空间浪费、冗余IO、重复计算"),
         HumanMessage(content = f"代码结构：{state['code_analysis']}\n\n原始代码：{state['original_code']}"),
     ])
+    if result is None:
+        return {"review_results": []}
     result.dimension = ReviewDimension.PERFORMANCE
     return {"review_results" : [result]}
     
@@ -59,6 +65,8 @@ def style_reviewer(state: AgentState) -> dict:
         SystemMessage(content="你是资深Python代码规范专家，专查命名、PEP 8、类型注解、注释质量。"),
         HumanMessage(content=f"代码结构：{state['code_analysis']}\n\n原始代码：{state['original_code']}"),
     ])
+    if result is None:
+        return {"review_results": []}
     result.dimension = ReviewDimension.STYLE
     return {"review_results": [result]}
 
@@ -79,11 +87,11 @@ def critic_agent(state: AgentState)->dict:
             )
 
     summary = structured_llm.invoke([
-        SystemMessage(content =( 
-            "你是代码审查主管。请对以下问题清单：\n"                       
-            "1. 去重：多条指向同一行号+同类问题的合并为一条\n"             
-            "2. 排序：按严重度(CRITICAL > HIGH > MEDIUM > LOW)优先，同级按行号\n"                                                    
-            "3. 评分：根据问题数量和严重度打分(0-100)\n"                   
+        SystemMessage(content =(
+            "你是代码审查主管。请对以下问题清单：\n"
+            "1. 去重：多条指向同一行号+同类问题的合并为一条\n"
+            "2. 排序：按严重度(CRITICAL > HIGH > MEDIUM > LOW)优先，同级按行号\n"
+            "3. 评分：根据问题数量和严重度打分(0-100)\n"
             "4. 每条生成可执行的 fix_instruction"
         )),
         HumanMessage(content =(
@@ -92,6 +100,8 @@ def critic_agent(state: AgentState)->dict:
             + "\n".join(issues_text)
         )),
     ])
+    if summary is None:
+        return {}
     return {"critic_summary": summary}
 
 def coder_agent(state: AgentState)->dict:
@@ -101,7 +111,10 @@ def coder_agent(state: AgentState)->dict:
 
     #将action_plan的每条修复指令展开成可读文本
     plan_text = []
-    for item in state['critic_summary'].action_plan:
+    critic = state.get('critic_summary')
+    if critic is None:
+        return {}
+    for item in critic.action_plan:
         plan_text.append(
             f" [{item.priority}] 行{item.lineno} | {item.severity.value}/{item.category.value}\n"
             f" 指令：{item.fix_instruction}"
@@ -115,25 +128,30 @@ def coder_agent(state: AgentState)->dict:
 
     result = structured_llm.invoke([
         SystemMessage(content=(
-            "你是 Python 代码修复专家。请按以下规则修改代码：\n"           
-            "1. 严格按照 fix_instruction 逐一修改，不要重构其他部分\n"     
-            "2. 保持原代码的缩进风格和整体结构\n"                          
-            "3. 不要在修复代码周围添加注释标记（如 # FIXED）\n"            
-            "4. 修改后代码必须是可直接运行的合法 Python 代码\n"            
+            "你是 Python 代码修复专家。请按以下规则修改代码：\n"
+            "1. 严格按照 fix_instruction 逐一修改，不要重构其他部分\n"
+            "2. 保持原代码的缩进风格和整体结构\n"
+            "3. 不要在修复代码周围添加注释标记（如 # FIXED）\n"
+            "4. 修改后代码必须是可直接运行的合法 Python 代码\n"
             "5. 如果有 reflection_notes 或 human_feedback，优先参考其意见\n"
         )),
         HumanMessage(content=(
             f"原始代码：\n\n```{state['original_code']}```\n\n"
-            f"修复计划：（共{len(state['critic_summary'].action_plan)}条：\n"
+            f"修复计划：（共{len(critic.action_plan)}条：\n"
             + "\n".join(plan_text)
             + extra_context
         )),
     ])
+    if result is None:
+        return {}
     return {"coder_result": result}
 
 def sandbox_executor(state: AgentState)->dict:
     """沙箱节点：执行修复后的代码，验证能否正常运行"""
-    fixed_code = state['coder_result'].fixed_code
+    coder = state.get('coder_result')
+    if coder is None:
+        return {'sandbox_result': SandboxResult(exit_code=-1, stderr='修复代码为空', passed=False)}
+    fixed_code = coder.fixed_code
 
     #将修复代码写入临时文件
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
@@ -172,11 +190,13 @@ def reflect_node(state: AgentState)->dict:
     structured_llm = reflect_llm.with_structured_output(ReflectionResult)
 
     #将上一轮修改记录展开成可读文本
+    coder = state.get('coder_result')
     changes_text = []
-    for ref in state['coder_result'].changes:
-        changes_text.append(
-            f"行{ref.lineno}: {ref.original} ->{ref.fixed}（{ref.reason}）"
-        )
+    if coder is not None:
+        for ref in coder.changes:
+            changes_text.append(
+                f"行{ref.lineno}: {ref.original} ->{ref.fixed}（{ref.reason}）"
+            )
 
     reflection = structured_llm.invoke([
         SystemMessage(content=(
@@ -192,6 +212,11 @@ def reflect_node(state: AgentState)->dict:
             f"stderr={state['sandbox_result'].stderr}\n"
         )),
     ])
+    if reflection is None:
+        return {
+            'reflection_notes': 'LLM 返回为空，无法分析失败原因',
+            'retry_count': state['retry_count']+1,
+        }
     return {
         'reflection_notes': reflection.new_strategy,
         'retry_count': state['retry_count']+1,

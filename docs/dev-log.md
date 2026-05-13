@@ -13,6 +13,7 @@
 - [问题 #6：HITL `interrupt_before` 中断不抛异常 —— 流程静默走完但报告未生成](#问题-6hitl-interrupt_before-中断不抛异常--流程静默走完但报告未生成)
 - [问题 #7：LLM 返回 `"issues": null` 导致 `AttributeError`](#问题-7llm-返回-issues-null-导致-attributeerror)
 - [问题 #8：LLM 返回枚举非法值导致 `ValidationError` —— 系统性加固所有枚举字段](#问题-8llm-返回枚举非法值导致-validationerror--系统性加固所有枚举字段)
+- [问题 #9：`with_structured_output` 返回 `None` 导致 `AttributeError` —— 全链路 None 保护](#问题-9with_structured_output-返回-none-导致-attributeerror--全链路-none-保护)
 
 ---
 
@@ -102,7 +103,7 @@
 
 **排查过程**：
 
-1. **初步怀疑路径问题**：项目中导入使用裸模块名（`from graph.state import ...`），怀疑 `src/` 没加入 `sys.path`。回头查 `docs/dev-issues.md` 问题 #1 已有解决方案——`pip install -e .` + `pyproject.toml` 中 `package-dir = { "" = "src" }`。
+1. **初步怀疑路径问题**：项目中导入使用裸模块名（`from graph.state import ...`），怀疑 `src/` 没加入 `sys.path`。回头查 `docs/dev-log.md` 问题 #1 已有解决方案——`pip install -e .` + `pyproject.toml` 中 `package-dir = { "" = "src" }`。
 2. **排除路径问题**：`graph` 包能导入成功（`from graph.builder import build_graph` 未报路径错误），说明 `src/` 已在 `sys.path` 中，路径没问题。
 3. **定位根因**：查看 `pyproject.toml`，发现 `[project]` 下**缺少 `dependencies` 列表**。`pip install -e .` 只注册了包路径（`.pth` 文件），但不会安装任何第三方依赖。
 
@@ -363,3 +364,44 @@ class Issue(BaseModel):
       lineno: int
       fix_instruction: str
   ```
+
+---
+
+## 问题 #9：`with_structured_output` 返回 `None` 导致 `AttributeError` —— 全链路 None 保护
+
+**日期**：2026-05-13
+
+**错误信息**：
+```
+AttributeError: 'NoneType' object has no attribute 'dimension'
+During task with name 'style_reviewer' and id 'd0b1d507-533a-96a7-5478-d9c6fd93e976'
+```
+
+**原因**：`with_structured_output` 解析 LLM 返回的 JSON 完全失败时，不抛异常而是返回 `None`。问题 #3 和 #4 加的 `field_validator` 只保护"模型构造成功但字段值非法"，不保护"模型根本没构造出来"的情况。`style_reviewer` 的 `result.dimension = ...` 对 None 调用属性直接崩。
+
+**攻击面**：`nodes.py` 中 7 个 `structured_llm.invoke()` 调用点全部没有 None 守卫：
+
+| # | 节点 | 炸点 |
+|---|------|------|
+| 1 | `code_parser` | `analysis`=None → 下游 `.functions` AttributeError |
+| 2 | `security_reviewer` | `result`=None → `.dimension` AttributeError |
+| 3 | `performance_reviewer` | 同上 |
+| 4 | `style_reviewer` | 同上 ← 本次触发 |
+| 5 | `critic_agent` | `summary`=None → 下游 `.action_plan` AttributeError |
+| 6 | `coder_agent` | `result`=None → 下游 `.fixed_code` AttributeError |
+| 7 | `reflect_node` | `reflection`=None → `.new_strategy` AttributeError |
+
+**修复**：两件事 ——（1）7 个调用点加 None 守卫，返回安全默认值；（2）3 个消费端（`coder_agent`、`sandbox_executor`、`reflect_node`）加输入守卫。
+
+生产端 fallback 策略：
+
+| 节点 | `invoke()` 返回 None 时 |
+|------|----------------------|
+| `code_parser` | 返回空 `CodeAnalysis()` |
+| 三个审查员 | 返回 `{"review_results": []}` |
+| `critic_agent` / `coder_agent` | 返回 `{}` |
+| `reflect_node` | 返回默认反思文本 + `retry_count+1` |
+
+消费端：`coder_agent` 检查 `critic_summary is None`、`sandbox_executor` 和 `reflect_node` 检查 `coder_result is None`。
+
+**性质**：间歇性 bug，LLM 输出质量波动触发。同样代码跑两次，一次炸一次不炸。
