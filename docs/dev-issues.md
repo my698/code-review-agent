@@ -320,6 +320,40 @@ if state_snapshot.next:
 | `('human_review',)` | 中断在 `human_review` 前，该节点待执行 |
 | 其他非空值 | 中断在其他位置 |
 
+#详细解析
+ ---                                                                   
+  第一层：interrupt_before 做了什么
+                                                                        
+  编译图时传了 interrupt_before=["human_review"]，LangGraph 在执行到
+  human_review 节点之前主动暂停。它不是崩溃、不是报错，而是把当前 state 
+  写入 checkpointer（MemorySaver），然后让 invoke() 正常返回。所以
+  invoke() 不抛异常——对它来说"暂停"和"跑完"都是正常结束。               
+                  
+  ---                                                                   
+  第二层：get_state(config).next 怎么区分"暂停"和"跑完"
+                                                                        
+  app.get_state(config) 通过 thread_id 去 checkpointer
+  里查这个流程的快照（StateSnapshot），快照里有一个字段叫               
+  next，记录的是还有哪些节点排队等着执行：
+                                                                        
+  ┌───────────────────┬──────────────────────────────────────────────┐  
+  │      next 值      │                     含义                     │
+  ├───────────────────┼──────────────────────────────────────────────┤  
+  │ () 空元组         │ 所有节点都执行完了，没有排队                 │
+  ├───────────────────┼──────────────────────────────────────────────┤  
+  │ ('human_review',) │ 有节点在排队 → 说明被 interrupt_before       │  
+  │                   │ 拦住了                                       │  
+  └───────────────────┴──────────────────────────────────────────────┘  
+                                                                        
+  所以 if state_snapshot.next                                           
+  等价于问："还有人在排队吗？"——有，就是中断了；没有，就是真跑完了。
+                                                                        
+  ---             
+  一句话总结：invoke() 不告诉你"我暂停了"，它只把 state
+  写盘就下班。你得自己查 checkpointer                                   
+  里的排队名单（.next），名单非空就说明流程被挂起了，需要注入
+  human_feedback 再 invoke(None) 继续跑。
+
 **经验教训**：
 
 1. **不要假设异常 = 中断。** LangGraph 的 `interrupt_before` 是静默暂停，`invoke` 正常返回当前 state。中断检测必须用 `app.get_state(config).next`。

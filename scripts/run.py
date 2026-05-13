@@ -17,15 +17,30 @@ from config import LLM_MODEL, DEEPSEEK_API_KEY, MAX_RETRY
 from graph.builder import build_graph
 from graph.state import INITIAL_STATE
 
-# 测试用示例代码 —— 故意放了几个问题（SQL 注入、无类型注解、未定义变量）
+# 测试用示例代码 —— 故意放了几个问题（硬编码密钥、pickle 反序列化、裸 except、无类型注解）
 SAMPLE_CODE = """
-def calc(x,y):
-    result=x+y
+import pickle
+
+API_SECRET = "sk-abc123def456"
+
+def load_user_data(filename):
+    f = open(filename, "rb")
+    data = pickle.load(f)
+    f.close()
+    return data
+
+def divide(a, b):
+    try:
+        result = a / b
+    except:
+        result = 0
     return result
 
-def get_user_by_id(id):
-    query = "SELECT * FROM users WHERE id=" + id
-    return db.execute(query)
+def process_items(items):
+    result = []
+    for i in range(len(items)):
+        result.append(items[i].upper() + str(i))
+    return result
 """
 
 if __name__ == "__main__":
