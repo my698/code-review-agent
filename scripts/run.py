@@ -5,7 +5,13 @@
 import sys
 import asyncio
 import time
+import warnings
 from pathlib import Path
+
+# [2026-05-15] 抑制 LangGraph allowed_objects 弃用警告 + Deserializing 日志噪音
+warnings.filterwarnings("ignore", message=".*allowed_objects.*")
+import logging
+logging.getLogger("langgraph.checkpoint.serde.jsonplus").setLevel(logging.ERROR)
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -70,7 +76,7 @@ async def run_with_timing(app, config, initial_state):
     print("正在执行审查流程...")
     state = await stream_until_pause(initial_state, config)
 
-    # HITL 中断检测
+    # [Bug #2] HITL 中断检测：interrupt_before 不抛异常，必须通过 checkpointer 的 .next 判断是否暂停
     state_snapshot = app.get_state(config)
     if state_snapshot.next:
         print(">>> 暂停在 human_review 节点，等待人工确认...")

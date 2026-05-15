@@ -60,6 +60,7 @@ def build_graph():
 
     #4.并行分发：code_parser -> Send API ->三路审查员
         # 4.1 Send 分发函数
+	    # [Bug #1] Send 第二个参数是目标分支的全部 state，必须显式传 original_code，否则分支 KeyError
     def fanout_to_reviewers(state: AgentState) -> list[Send]:
         return [
             Send("security_reviewer", {

@@ -98,6 +98,7 @@ class Issue(BaseModel):
     estimated_impact: Optional[str] = None     # [性能专用] 预估性能影响，如 "从 3s 降至 0.1s"
     pep8_ref: Optional[str] = None             # [风格专用] 违反的 PEP 8 条目，如 "E501"=行太长
 
+    # [Bug #4] LLM 返回非法枚举值（如"安全"）时 fallback 到 MEDIUM
     @field_validator("severity", mode="before")
     @classmethod
     def unknown_severity_fallback(cls, v):
@@ -106,6 +107,7 @@ class Issue(BaseModel):
         except ValueError:
             return Severity.MEDIUM
 
+    # [Bug #4] LLM 返回非法枚举值（如"资源管理"）时 fallback 到 OTHER
     @field_validator("category", mode="before")
     @classmethod
     def unknown_category_fallback(cls, v):
@@ -120,10 +122,10 @@ class ReviewResult(BaseModel):
     dimension: ReviewDimension                           # 来自哪个审查员
     issues: list[Issue] = Field(default_factory=list)   # 该审查员发现的所有问题
 
+    # [Bug #3] LLM 返回 "issues": null 时兜底为空列表，防下游遍历 None 爆 AttributeError
     @field_validator("issues", mode="before")
     @classmethod
     def default_issues_to_empty(cls, v: list | None) -> list:
-        """LLM 返回 null 时自动转为空列表，防止下游 critic_agent 遍历 None 爆 AttributeError"""
         return v if v is not None else []
 
 
@@ -140,6 +142,7 @@ class ActionItem(BaseModel):
     lineno: int                      # 问题所在行号
     fix_instruction: str             # 具体怎么改的指令，必须能让 coder 直接执行
 
+    # [Bug #4] LLM 枚举越界 fallback
     @field_validator("severity", mode="before")
     @classmethod
     def unknown_severity_fallback(cls, v):
@@ -148,6 +151,7 @@ class ActionItem(BaseModel):
         except ValueError:
             return Severity.MEDIUM
 
+    # [Bug #4] LLM 枚举越界 fallback
     @field_validator("category", mode="before")
     @classmethod
     def unknown_category_fallback(cls, v):
@@ -155,6 +159,12 @@ class ActionItem(BaseModel):
             return IssueCategory(v) if isinstance(v, str) else v
         except ValueError:
             return IssueCategory.OTHER
+
+    # [B01-#05] LLM 偶发遗漏 fix_instruction 字段导致 ValidationError 崩溃，兜底为空字符串
+    @field_validator("fix_instruction", mode="before")
+    @classmethod
+    def missing_fix_instruction_fallback(cls, v):
+        return v if v is not None else ""
 
 
 class CriticSummary(BaseModel):#一份原始代码文件对应一份CriticSummary，但又三份ReviewResult
@@ -186,6 +196,8 @@ class CoderResult(BaseModel):
     changes: list[ChangeItem] = Field(default_factory=list)  # 所有修改记录，每条是一个 ChangeItem
     fixed_count: int = 0                                     # 实际改了几处，0 表示没改（代码没问题）
     notes: str = ""                                          # 备注：无法自动修复的问题在这里说明
+    # [B01-#04] 因 [需人工] 跳过的条目，每条格式 "行{N}: {问题简述} — {人工需要做什么}"
+    skipped_items: list[str] = Field(default_factory=list)
 
 
 # ============================================================
@@ -207,6 +219,7 @@ class ReflectionResult(BaseModel):
     new_strategy: str              # 调整后的修复思路，coder_agent 重试时参考
     should_revert: bool = False    # 是否应该回退某处修改
 
+    # [Bug #4] LLM 返回非法 failure_type 时 fallback 到 LOGIC_ERROR
     @field_validator("failure_type", mode="before")
     @classmethod
     def unknown_failure_type_fallback(cls, v):
@@ -230,4 +243,6 @@ class FinalReport(BaseModel):
     sandbox_passed: bool = False                            # 沙箱验证是否通过
     retry_count: int = 0                                    # 修复经历了几次重试
     summary: str = ""                                       # 自然语言总结：整体评价 + 关键建议
-    status: str = "running"                                 # 流程状态：running / success / failed
+    # [B01-#04] 状态新增 partial —— 沙箱通过但存在需人工处理的问题（如硬编码密钥需建 .env）
+    status: str = "running"                                 # running / success / partial / failed
+    skipped_items: list[str] = Field(default_factory=list)  # [B01-#04] 需人工介入的建议列表，从 CoderResult 透传
