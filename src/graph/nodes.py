@@ -94,25 +94,37 @@ def critic_agent(state: AgentState)->dict:
             )
 
     summary = structured_llm.invoke([
-        # [B01-#01] 规则1-4：收紧 fix_instruction 粒度 + [B01-#04] 规则5：[需人工] 机制
+        # [B01] critic 四分类判定：丢弃/[需人工]/[跳过]/修复
         SystemMessage(content =(
             "你是代码审查主管。请对以下问题清单：\n"
             "1. 去重：多条指向同一行号+同类问题的合并为一条\n"
             "2. 排序：按严重度(CRITICAL > HIGH > MEDIUM > LOW)优先，同级按行号\n"
             "3. 评分：根据问题数量和严重度打分(0-100)\n"
-            "4. fix_instruction 格式要求：\n"
-            "   - 必须包含：目标行号 + 具体改动（FROM → TO）\n"
-            "   - 示例：第 10 行：将 cursor.execute(sql) 改为 cursor.execute(sql, (user_input,))\n"
-            "   - 只描述操作，不写\"建议\"\"考虑\"\"可改为\"等模糊词\n"
-            "   - 如果修复需要改动 3 行以上，在 description 中标注 [建议跳过]\n"
-            # [B01-#04] critic: 识别超出单文件修改能力的问题
-            "5. [需人工] 标注规则（满足任一条件即标注）：\n"
-            "   - 修复需要新建文件（.env / config.py / Makefile 等）→ 必须标注 [需人工]\n"
-            "   - 修复需要安装新依赖包（pip install xxx）→ 必须标注 [需人工]\n"
-            "   - 修复需要改动当前文件以外的代码 → 必须标注 [需人工]\n"
-            "   - 修复依赖项目基础设施（环境变量注入、密钥管理系统、数据库连接池等）→ 必须标注 [需人工]\n"
-            "   - [需人工] 条目的 fix_instruction 不写 FROM→TO，改为描述：问题是什么 + 人工需要建立什么基础设施 + 建立后代码可以怎么改\n"
-            "   - 示例 fix_instruction：'第33行 api_key 为硬编码密钥。需人工建立 .env 文件存放 API_KEY，并在项目入口加 load_dotenv()。完成后将 api_key = \"sk-xxx\" 改为 api_key = os.getenv(\"API_KEY\")'"
+            "4. 对去重后的每条问题做判定：\n"
+            "\n"
+            "   第一步：该问题是否影响代码的正确性或安全性？\n"
+            "   如果否 → 丢弃，不生成 action_item。\n"
+            "   （纯风格、命名偏好、docstring/类型注解/注释缺失、等价写法建议、\n"
+            "   代码组织建议等，只要不影响正确性和安全性，一律丢弃）\n"
+            "\n"
+            "   如果是 → 按以下三类处理：\n"
+            "\n"
+            "   [需人工] — 修复依赖当前文件之外的条件（满足任一即标注）：\n"
+            "   · 需要新建文件（.env / config.py 等）\n"
+            "   · 需要安装新依赖包\n"
+            "   · 需要改动当前文件以外的代码\n"
+            "   · 依赖项目基础设施（环境变量、密钥管理、数据库等）\n"
+            "   fix_instruction 描述：问题 + 所需基础设施 + 建立后怎么改\n"
+            "\n"
+            "   [跳过] — 问题真实，但自动修复风险高于收益（满足任一即标注）：\n"
+            "   · 修复涉及 3 行以上代码变更\n"
+            "   · 修复会改变函数签名/类接口\n"
+            "   · 修复涉及核心算法/状态机/并发逻辑\n"
+            "   fix_instruction 描述问题 + 建议修复方向\n"
+            "\n"
+            "   修复 — 不属于上述两类：\n"
+            "   · fix_instruction 必须包含行号 + FROM → TO\n"
+            "   · 禁用\"建议\"\"考虑\"\"可改为\"等模糊词"
         )),
         HumanMessage(content =(
             f"原始代码：\n```\n{state['original_code']}\n```\n\n"
@@ -149,32 +161,34 @@ def coder_agent(state: AgentState)->dict:
         extra_context += f"\n\n[用户修改意见]{state['human_feedback']}"
 
     result = structured_llm.invoke([
-        # [B01-#01] 6 条禁令 + [B01-#04] [需人工] 跳过规则
+        # [B01] coder: 硬禁令二道防线 + 强力兜底
+        # 硬禁令（#1-#3）：拦截一切来源，包括 critic 误判，零误杀
+        # 兜底："核心原则"+"绝对不能"覆盖防手痒，不再单独列软禁令
         SystemMessage(content=(
             "你是 Python 代码修复专家。\n\n"
             "核心原则：最小改动 —— 只修改 fix_instruction 指定的问题行，其余代码一字不改。\n\n"
-            "硬约束（违反即修复无效）：\n"
+            # --- 硬禁令：绝对禁止，fix_instruction 要求也不行 ---
+            "硬禁令（以下行为绝对禁止，包括 fix_instruction 要求的情况）：\n"
             "1. 禁止改名 —— 函数名、类名、变量名、参数名一律不动\n"
-            "2. 禁止改签名 —— 不增删参数、不改返回类型、不加类型注解\n"
-            "3. 禁止加功能 —— fix_instruction 没说到的逻辑一律不添加\n"
-            "4. 禁止加 import —— 不新增任何 import 语句\n"
-            "5. 禁止加注释 —— 不写 # FIXED / # TODO / 解释性注释\n"
-            "6. 禁止改作用域 —— 不得把局部变量提升为全局、或把全局降为局部\n\n"
+            "2. 禁止改签名 —— 不增删参数、不改返回类型\n"
+            "3. 禁止改作用域 —— 不得把局部变量提升为全局、或把全局降为局部\n\n"
+            # --- 执行规则：标签判定，硬禁令违规静默丢弃 ---
             "判断规则：\n"
-            # [B01-#04] coder: 遇到 [需人工] 必须跳过，写入 skipped_items
-            "- fix_instruction 标注 [需人工] → 必须跳过该条，不修，将该条内容原样写入 skipped_items 列表\n"
-            "- fix_instruction 标注 [建议跳过] 的项 → 跳过，原样保留\n"
-            "- LOW / MEDIUM 级别问题需要新增代码逻辑 → 跳过\n"
-            "- 改动超过 3 行 → 跳过，不修\n"
+            "- fix_instruction 含 [需人工] 或 [跳过] → 跳过，写入 skipped_items\n"
+            "- fix_instruction 无标签 → 先过硬禁令检查：\n"
+            "  · 违反硬禁令（需改名/改签名/改作用域）→ 跳过该条，静默丢弃\n"
+            "  · 未违反硬禁令 → 严格按 fix_instruction 逐一修复\n"
             "- 参考优先级：human_feedback > reflection_notes > fix_instruction\n"
-            "- 修改后代码必须是可直接运行的合法 Python 代码"
+            "- 修改后代码必须是可直接运行的合法 Python 代码\n\n"
+            # --- 强力兜底：防止任何自发多做 ---
+            "你绝对不能做任何 fix_instruction 要求之外的改动。一个字都不要多改。"
         )),
         HumanMessage(content=(
             f"原始代码：\n\n```{state['original_code']}```\n\n"
             f"修复计划：（共{len(critic.action_plan)}条：\n"
             + "\n".join(plan_text)
-            # [B01-#04] 提示模型：含 [需人工] 的条目不得修改，必须写入 skipped_items
-            + "\n\n注意：含 [需人工] 标记的条目，跳过修改，将其内容原样放入 skipped_items 列表。"
+            # 提示含标签条目必须跳过
+            + "\n\n注意：含 [需人工] 或 [跳过] 标记的条目，跳过修改，将其内容原样放入 skipped_items 列表。"
             + extra_context
         )),
     ])
@@ -281,7 +295,7 @@ def output_node(state: AgentState) -> dict:
     fixed_code = coder.fixed_code if coder else ""
     changes = coder.changes if coder else []
     sandbox_passed = sandbox.passed if sandbox else False
-    # [B01-#04] 收集需人工介入的建议
+    # [B01-#04] 收集 [需人工] 和 [跳过] 的建议
     skipped = coder.skipped_items if coder else []
 
     score_before = critic.score_before if critic else 100
@@ -290,7 +304,7 @@ def output_node(state: AgentState) -> dict:
     else:
         score_after = score_before
 
-    # [B01-#04] 状态判定：有跳过项 → partial（沙箱通过但有人工建议），无跳过项 → success，沙箱失败 → failed
+    # [B01-#04] 状态判定：有跳过项 → partial（沙箱通过但含 [需人工] 或 [跳过] 建议）
     if not sandbox_passed:
         status = "failed"
     elif skipped:

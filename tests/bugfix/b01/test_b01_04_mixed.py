@@ -224,6 +224,17 @@ if __name__ == "__main__":
         for s in skipped:
             print(f"    - {s}")
 
+    # [DEBUG] 打印 action_items 明细，查看每条打了什么标记
+    if report.action_items:
+        print(f"\n  [DEBUG] action_items 明细 ({len(report.action_items)} 条):")
+        for item in report.action_items:
+            instruction = item.fix_instruction[:120]
+            has_need_human = "[需人工]" in instruction
+            has_skip = "[跳过]" in instruction
+            label = "[需人工]" if has_need_human else ("[跳过]" if has_skip else "无标记")
+            print(f"    [{item.priority}] 行{item.lineno} {item.severity.value}/{item.category.value} {label}")
+            print(f"      指令: {instruction}")
+
     checks = run_checks(SAMPLE_CODE, fixed_code)
 
     # [B01-#04] 对于 partial 状态，放宽检测：新增 import 如果是为 [需人工] 条目引入的，不算越界
