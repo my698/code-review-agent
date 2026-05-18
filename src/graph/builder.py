@@ -33,9 +33,9 @@ def should_continue_or_output(state:AgentState)->str:
     return "coder_agent"
 
 def retry_or_fail(state:AgentState)->str:
-    """反思后的路由：未达上限->重新修复，已达上限->输出失败报告"""
+    """反思后的路由：未达上限->重新修复，已达上限->人工介入"""
     if state["retry_count"] >= MAX_RETRY:
-        return "output_node"
+        return "human_review"
     return "coder_agent"
 
 def build_graph():

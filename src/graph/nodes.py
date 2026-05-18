@@ -39,7 +39,32 @@ def security_reviewer(state: AgentState)->dict:
     """安全审查员:从注入/加密/权限等角度审查代码"""
     structured_llm = llm.with_structured_output(ReviewResult)
     result = structured_llm.invoke([
-        SystemMessage(content = "你是一个资深安全审计专家,专查注入漏洞、敏感信息泄露、加密缺陷、权限问题。"),
+        SystemMessage(content = (
+            "你是资深安全审计专家。只报告确认存在的安全漏洞，不推测潜在风险。\n\n"
+            "确认标准 —— 必须同时满足：\n"
+            "1. 代码中存在危险操作（具体函数/模式见下方）\n"
+            "2. 该危险操作的输入来自不可信数据源（用户输入/外部请求/文件读取）\n"
+            "仅满足一条 → 不报告。\n\n"
+            "危险操作清单：\n\n"
+            "· SQL 拼接执行 — cursor.execute(sql_string) / raw() / extra() 且 sql_string 含用户输入\n"
+            "  排除：参数化查询 cursor.execute(sql, (user_input,))\n\n"
+            "· 命令执行 — os.system() / subprocess.call() / eval() / exec() / compile()\n"
+            "  排除：subprocess.run([\"ls\", \"-l\"]) 参数列表已硬编码的情况\n\n"
+            "· 路径拼接 — open(user_input) / open(path + user_input) 无校验\n"
+            "  排除：open(\"config.json\") / open(os.path.join(BASE, x)) 路径前缀固定的\n\n"
+            "· 硬编码凭据 — 代码中出现 password=\"xxx\" / api_key=\"sk-xxx\" / secret=\"xxx\" 等固定字符串\n"
+            "  这是唯一不需要攻击面的条目 —— 凭据本身即是漏洞\n\n"
+            "· 不安全反序列化 — pickle.load() / yaml.load() / marshal.load()\n"
+            "  排除：json.load/loads（安全，不构成反序列化漏洞）\n\n"
+            "· 不安全加密 — MD5/SHA1 做密码哈希 / 硬编码加密盐或 IV\n\n"
+            "严重度：\n"
+            "  CRITICAL — sql拼接/命令注入/硬编码生产凭据/pickle.load(用户输入)\n"
+            "  HIGH — 其他确认漏洞\n"
+            "  MEDIUM — 确认存在但危害低（如无实际利用路径的路径拼接）\n\n"
+            "无确认漏洞 → issues 返回空列表 []\n"
+            "不确定 → 不报告\n"
+            "禁止\"可能\"\"潜在\"\"建议加强\"等推测措辞"
+        )),
         HumanMessage(content = f"代码结构：{state['code_analysis']}\n\n原始代码：{state['original_code']}"),
     ])
     # [Bug #5] LLM 返回 None 时兜底为空列表
@@ -213,7 +238,7 @@ def sandbox_executor(state: AgentState)->dict:
     #在子程序中执行，设置超时防止死循环
     try:
         result = subprocess.run(
-            ['python3', tmp_path],
+            ['python3', '-W', 'error', tmp_path],
             capture_output=True, text=True, timeout=10,
         )
         sandbox = SandboxResult(
@@ -299,10 +324,16 @@ def output_node(state: AgentState) -> dict:
     skipped = coder.skipped_items if coder else []
 
     score_before = critic.score_before if critic else 100
-    if sandbox_passed and changes:
-        score_after = min(score_before + len(changes) * 3, 100)
+    if sandbox_passed:
+        if changes:
+            # [B03] 每处修复 +2，提升上限为剩余空间的一半（不过度膨胀）
+            improvement = min(len(changes) * 2, (100 - score_before) // 2)
+            score_after = min(score_before + improvement, 100)
+        else:
+            score_after = score_before
     else:
-        score_after = score_before
+        # [B03] 沙箱失败扣 10 分
+        score_after = max(score_before - 10, 0)
 
     # [B01-#04] 状态判定：有跳过项 → partial（沙箱通过但含 [需人工] 或 [跳过] 建议）
     if not sandbox_passed:

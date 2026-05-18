@@ -1,84 +1,77 @@
 # Bug 修复工作台
 
-> 待修 bug 清单 + 修复记录。每个 bug 关联 `docs/dev-bug-dives.md` 的详细分析。
-
----
-
-## 8 轮测试概况
-
-> 2026-05-13 完成，覆盖安全/性能/风格/混合/干净代码等场景。
-
-| # | 测试场景 | 测试代码特征 | 核心发现 |
-|---|---------|-------------|---------|
-| 1 | SQL 注入 | `cursor.execute(sql)` 拼接用户输入 | coder 改名(`get_user`→`get_users_by_name`)、提升全局连接、加权限校验/脱敏/环境变量 |
-| 2 | 性能问题 | O(n²) 循环 + 冗余字典查找 | coder 改签名(`items`→`elements`)、加 TypeError、`import logging` 写在 if 分支内；score_after 通胀(42→100) |
-| 3 | 风格灾难 | 命名混乱、格式烂、违反 PEP 8 | 安全审查员误报（输入校验≠注入）；coder 引入 Enum 重构、改异常语义 |
-| 4 | 混合问题 | 硬编码密钥 + 裸 except + 资源泄露 | `with_structured_output` 返回 None 导致全链路崩溃，触发系统性 None 守卫修复 |
-| 5 | 干净代码 | 可正常运行、无明显问题 | coder 对 6 个 LOW/MEDIUM 问题逐一修坏，3 次重试耗尽；失败流程无 HITL；score_after 不变(85→85) |
-| 6 | 资源泄露 | `subprocess` 未等待、文件句柄未关 | coder 再次改名(`run_backup`→`execute_command`)；reflect 诊断能力不足 |
-| 7 | （待补充） | — | — |
-| 8 | （待补充） | — | — |
-
-### 各测试暴露的 Bug 分布
-
-| Bug | 测试 #1 | #2 | #3 | #4 | #5 | #6 |
-|-----|:-:|:-:|:-:|:-:|:-:|:-:|
-| B01 coder 越界 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| B02 安全审查误报 | | | ✓ | | | |
-| B03 评分公式 | | ✓ | | | ✓ | |
-| B04 失败缺 HITL | | | | | ✓ | |
-| B05 sandbox 假通过 | | | | | | |
-
----
-
-## B01: coder 越界重构
-
-- **状态**: 🔴 待修
-- **关联**: `docs/dev-bug-dives.md` #6（待写入）
-- **测试脚本**: `test_b01_coder_overfix.py`
-- **现象**: coder 在修复计划外擅自改函数名、加业务逻辑（Enum/权限校验/脱敏）、改异常语义（None→raise）、选择性执行（用注释糊弄代替真修复）
-- **影响**: 8/8 测试出现，最高频问题
-- **修复方向**: 强化 coder prompt 约束——禁止改名、禁止加新逻辑、禁止只加注释不修改
-
-## B02: 安全审查员误报
-
-- **状态**: 🔴 待修
-- **关联**: `docs/dev-bug-dives.md` #7（待写入）
-- **测试脚本**: `test_b02_security_false_positive.py`
-- **现象**: 输入校验缺失被标为"critical 注入"，对无害代码上纲上线
-- **影响**: 拉低整体评分，误导 coder 过度修复
-- **修复方向**: prompt 加误报抑制——"只报告确认存在的安全漏洞，不推测潜在风险"
-
-## B03: 评分公式问题
-
-- **状态**: 🔴 待修
-- **关联**: `docs/dev-bug-dives.md` #8（待写入）
-- **测试脚本**: `test_b03_score_formula.py`
-- **现象**: 
-  - `score_after = score_before + len(changes) * 3` 通胀（改动越多分越高）
-  - 修复失败时 score_after 不变（42→100, 85→85 都不合理）
-- **修复方向**: score_after 基于 critic 评分而非改动数量；失败时扣分
-
-## B04: 失败流程缺少 HITL
-
-- **状态**: 🔴 待修
-- **关联**: `docs/dev-bug-dives.md` #9（待写入）
-- **测试脚本**: `test_b04_failure_no_hitl.py`
-- **现象**: sandbox 失败 → reflect → retry 耗尽 → output_node，全程无人工介入
-- **影响**: 用户收到 status=failed 但不知道修复尝试了什么
-- **修复方向**: 失败终止前插入 human_review，或至少展示 reflect 分析结果
-
-## B05: sandbox 虚假通过
-
-- **状态**: 🔴 待修
-- **关联**: `docs/dev-bug-dives.md` #10（待写入）
-- **测试脚本**: `test_b05_sandbox_verify.py`
-- **现象**: 沙箱只跑 `python3 tmp.py` 测语法，不验证修复是否真消除了问题。`exec(code_str)` 仍保留，但 `sandbox_passed=True`
-- **修复方向**: 短期在 prompt 中关注、长期加验证用例执行
+> 待修 bug 清单 + 修复记录。
 
 ---
 
 ## 已修复
 
-（修复后移至此处）
+| Bug | 修复日期 | 说明 |
+|-----|:--:|------|
+| B00 健壮性 | 2026-05-18 | 全链路 LLM 输出兜底：7 节点 null 守卫 + 22 个 field_validator |
+| B01 coder 越界 | 2026-05-16 | 硬禁令二道防线 + critic 四分类判定 |
+| B02 安全误报 | 2026-05-17 | security_reviewer prompt 重构为结构化确认标准 |
+| B03 评分公式 | 2026-05-17 | score_after 通胀修正 + 失败扣分 + 提升上限 |
+| B04 失败缺 HITL | 2026-05-18 | retry_or_fail 重试耗尽后路由到 human_review |
+| B05 sandbox 假通过 | 2026-05-18 | -W error 升级 warning 为异常（定性为功能增强，非 bug） |
 
+---
+
+## 各 Bug 详情
+
+### B00: LLM 结构化输出健壮性
+
+- **状态**: ✅ 已修复
+- **修复日志**: `tests/bugfix/b00/fix-log.md`
+- **现象**: LLM 的 `with_structured_output()` 不能保证输出 100% 符合 Pydantic schema。枚举值非法、必填字段为 null、整个输出为 None 三种失败模式均可导致 `ValidationError` 全链路崩溃。
+- **修复**: 双重防线——节点级 `if result is None` 守卫 (7 节点) + 模型级 `@field_validator` 兜底 (22 个 validator, 9 个模型)
+
+### B01: coder 越界重构
+
+- **状态**: ✅ 已修复
+- **修复日志**: `tests/bugfix/b01/fix-log.md`
+- **现象**: coder 在修复计划外擅自改函数名、加业务逻辑、改异常语义
+- **修复**: coder prompt 硬禁令（禁止改名/改签名/改作用域）+ critic 四分类判定（丢弃/[需人工]/[跳过]/修复）
+
+### B02: 安全审查员误报
+
+- **状态**: ✅ 已修复
+- **修复日志**: `tests/bugfix/b02/fix-log.md`
+- **现象**: 输入校验缺失被标为 CRITICAL 注入，对无害代码上纲上线
+- **修复**: security_reviewer prompt 从 1 行扩到 ~30 行，确认标准（危险操作 + 不可信数据源 同时满足）、危险操作清单（每类带排除项）、禁止推测措辞
+
+### B03: 评分公式问题
+
+- **状态**: ✅ 已修复
+- **修复日志**: `tests/bugfix/b03/fix-log.md`
+- **现象**: `score_after = score_before + len(changes) * 3` 通胀，失败时无扣分
+- **修复**: `*3→*2`，提升上限 `(100-sb)//2`，失败 `-10`。CoderResult 删除 `fixed_count` 字段
+
+### B04: 失败流程缺少 HITL
+
+- **状态**: ✅ 已修复
+- **修复日志**: `tests/bugfix/b04/fix-log.md`
+- **现象**: sandbox 失败后 retry 耗尽直接 output_node，无人工介入
+- **修复**: `retry_or_fail` 在 `retry_count >= MAX_RETRY` 时返回 `human_review`（原是 `output_node`）。方案讨论中放弃"首次失败即 HITL"，采纳"先自动 retry 再人工介入"
+
+### B05: sandbox 语义验证缺失
+
+- **状态**: ✅ 已处理（功能增强，非 bug）
+- **修复日志**: `tests/bugfix/b05/fix-log.md`
+- **现象**: sandbox 只验语法不验语义，空壳修复（如 `os.getenv` 无默认值）可能假通过
+- **处理**: sandbox 命令加 `-W error`，warning 升级异常。完整语义验证需新模块，当前阶段不引入。已有 `[需人工]` + B04 HITL 缓解
+
+---
+
+## 8 轮基线测试概况
+
+> 2026-05-13 完成，覆盖安全/性能/风格/混合/干净代码等场景。
+
+| # | 测试场景 | 核心发现 |
+|---|---------|---------|
+| 1 | SQL 注入 | coder 越界（改名/加权限校验） |
+| 2 | 性能问题 | coder 改签名/加 import；score_after 通胀 |
+| 3 | 风格灾难 | 安全审查员误报；coder 引入 Enum 重构 |
+| 4 | 混合问题 | with_structured_output 返回 None 触发系统性修复 |
+| 5 | 干净代码 | coder 修坏干净代码；失败无 HITL；score 不扣分 |
+| 6 | 资源泄露 | coder 改名；reflect 诊断不足 |

@@ -63,6 +63,17 @@ class FunctionInfo(BaseModel):
     docstring: Optional[str] = None                   # 文档字符串，可能不存在
     body_summary: str = ""                            # 函数体做什么的一句话摘要
 
+    # [B00] LLM 遗漏 name/lineno 时兜底
+    @field_validator("name", mode="before")
+    @classmethod
+    def missing_name_fallback(cls, v):
+        return v if v is not None else ""
+
+    @field_validator("lineno", mode="before")
+    @classmethod
+    def missing_lineno_fallback(cls, v):
+        return v if v is not None else 0
+
 
 class ClassInfo(BaseModel):
     """单个类的结构化描述 —— code_parser 提取每个类的基本信息"""
@@ -71,6 +82,17 @@ class ClassInfo(BaseModel):
     methods: list[str] = Field(default_factory=list)  # 方法名列表
     base_classes: list[str] = Field(default_factory=list)  # 父类列表
     docstring: Optional[str] = None                   # 文档字符串，可能不存在
+
+    # [B00] LLM 遗漏 name/lineno 时兜底
+    @field_validator("name", mode="before")
+    @classmethod
+    def missing_name_fallback(cls, v):
+        return v if v is not None else ""
+
+    @field_validator("lineno", mode="before")
+    @classmethod
+    def missing_lineno_fallback(cls, v):
+        return v if v is not None else 0
 
 
 class CodeAnalysis(BaseModel):
@@ -116,6 +138,17 @@ class Issue(BaseModel):
         except ValueError:
             return IssueCategory.OTHER
 
+    # [B02] LLM 偶发遗漏字段导致 ValidationError，兜底为空字符串/0
+    @field_validator("suggestion", "description", "code_snippet", mode="before")
+    @classmethod
+    def missing_string_fallback(cls, v):
+        return v if v is not None else ""
+
+    @field_validator("lineno", mode="before")
+    @classmethod
+    def missing_lineno_fallback(cls, v):
+        return v if v is not None else 0
+
 
 class ReviewResult(BaseModel):
     """单个审查员的完整输出，打包所有 Issue 并标记来自哪个维度"""
@@ -160,6 +193,17 @@ class ActionItem(BaseModel):
         except ValueError:
             return IssueCategory.OTHER
 
+    # [B00] LLM 遗漏 priority/description/lineno 时兜底
+    @field_validator("priority", "lineno", mode="before")
+    @classmethod
+    def missing_int_fallback(cls, v):
+        return v if v is not None else 0
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def missing_description_fallback(cls, v):
+        return v if v is not None else ""
+
     # [B01-#05] LLM 偶发遗漏 fix_instruction 字段导致 ValidationError 崩溃，兜底为空字符串
     @field_validator("fix_instruction", mode="before")
     @classmethod
@@ -177,6 +221,17 @@ class CriticSummary(BaseModel):#一份原始代码文件对应一份CriticSummar
     action_plan: list[ActionItem] = Field(default_factory=list)  # 按优先级排列的修复清单
     summary: str = ""                                    # 自然语言总结：主要风险 + 优先处理建议
 
+    # [B00] LLM 遗漏 score_before/total_issues 时兜底
+    @field_validator("score_before", mode="before")
+    @classmethod
+    def missing_score_fallback(cls, v):
+        return v if v is not None else 0
+
+    @field_validator("total_issues", mode="before")
+    @classmethod
+    def missing_total_issues_fallback(cls, v):
+        return v if v is not None else 0
+
 
 # ============================================================
 # coder_agent 输出 — 修复结果
@@ -189,15 +244,37 @@ class ChangeItem(BaseModel):
     fixed: str           # 修改后的代码片段
     reason: str          # 为什么这样改，一句话说清
 
+    # [B00] LLM 遗漏字段时兜底
+    @field_validator("lineno", mode="before")
+    @classmethod
+    def missing_lineno_fallback(cls, v):
+        return v if v is not None else 0
+
+    @field_validator("original", "fixed", "reason", mode="before")
+    @classmethod
+    def missing_string_fallback(cls, v):
+        return v if v is not None else ""
+
 
 class CoderResult(BaseModel):
     """coder_agent 的完整输出 — 修复后的完整代码 + 所有修改记录"""
     fixed_code: str                                          # 修复后的完整代码，整个文件传给 sandbox 执行
     changes: list[ChangeItem] = Field(default_factory=list)  # 所有修改记录，每条是一个 ChangeItem
-    fixed_count: int = 0                                     # 实际改了几处，0 表示没改（代码没问题）
     notes: str = ""                                          # 备注：无法自动修复的问题在这里说明
     # [B01-#04] 因 [需人工] 跳过的条目，每条格式 "行{N}: {问题简述} — {人工需要做什么}"
     skipped_items: list[str] = Field(default_factory=list)
+
+    # [B00] LLM 遗漏 fixed_code 时兜底
+    @field_validator("fixed_code", mode="before")
+    @classmethod
+    def missing_fixed_code_fallback(cls, v):
+        return v if v is not None else ""
+
+    # [B03] LLM 返回 "changes": null / "skipped_items": null 兜底为空列表
+    @field_validator("changes", "skipped_items", mode="before")
+    @classmethod
+    def default_list_to_empty(cls, v):
+        return v if v is not None else []
 
 
 # ============================================================
@@ -218,6 +295,12 @@ class ReflectionResult(BaseModel):
     root_cause: str                # 哪处修改导致了失败，点出具体的 ChangeItem
     new_strategy: str              # 调整后的修复思路，coder_agent 重试时参考
     should_revert: bool = False    # 是否应该回退某处修改
+
+    # [B00] LLM 遗漏 root_cause/new_strategy 时兜底
+    @field_validator("root_cause", "new_strategy", mode="before")
+    @classmethod
+    def missing_string_fallback(cls, v):
+        return v if v is not None else ""
 
     # [Bug #4] LLM 返回非法 failure_type 时 fallback 到 LOGIC_ERROR
     @field_validator("failure_type", mode="before")
