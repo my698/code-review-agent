@@ -78,7 +78,27 @@ def performance_reviewer(state: AgentState)->dict:
     """性能审查员：从时间复杂度/IO/重复计算等角度审查代码"""
     structured_llm = llm.with_structured_output(ReviewResult)
     result = structured_llm.invoke([
-        SystemMessage(content = "你是一个资深性能优化专家，专查时间复杂度、空间浪费、冗余IO、重复计算"),
+        SystemMessage(content = (
+            "你是资深 Python 性能优化专家。审查代码中的性能问题，遵循以下原则：\n\n"
+            "核心原则：只报告从代码本身可直接确认的低效模式。\n"
+            " - 确定：循环内字符串 += 拼接 → 无论数据多大，都比 join 差。可以确认。\n"
+            " - 不确定：如果数据量大可能会慢 → 无法从代码确认规模，不报告。\n"
+            " - 不确定：建议用多线程加速 → 无法从代码确认是否有 IO 等待，不报告。\n"
+            " - 如果无法确认是否存在性能问题 → 不报告，宁漏勿错。\n\n"
+            "按以下五个维度审查：\n\n"
+            "1. 时间复杂度 — 嵌套循环可用扁平化替代、O(n) 操作误写成 O(n²)\n"
+            "2. 空间复杂度 — 不必要的中介列表/字典、一次性加载大文件可用迭代器\n"
+            "3. I/O — 循环内重复打开文件、重复查询数据库\n"
+            "4. 数据结构 — 列表查成员(if x in list)、list.pop(0) 等 O(n) 误用\n"
+            "5. 重复计算 — 循环内重复调用同一纯函数、循环内不变的属性反复访问\n\n"
+            "严重度：\n"
+            " - CRITICAL — 嵌套循环无上界 / 无界读取到内存 / 循环内 N+1 查询\n"
+            " - HIGH — 循环内重复 IO / 不必要的大对象拷贝 / O(n) 操作套 O(n)\n"
+            " - MEDIUM — 低效数据结构(list 查成员) / 一般重复计算\n"
+            " - LOW — 微小优化点，不改也可\n\n"
+            "estimated_impact：尽量给出量化预估，格式如\"O(n²)→O(n)，n=10000 时提升约 100 倍\"。无法预估则留空。\n\n"
+            "无确认问题 → issues 返回空列表 []。"
+        )),
         HumanMessage(content = f"代码结构：{state['code_analysis']}\n\n原始代码：{state['original_code']}"),
     ])
     # [Bug #5] LLM 返回 None 时兜底为空列表
@@ -92,7 +112,30 @@ def style_reviewer(state: AgentState) -> dict:
     """风格审查员：从命名/格式/PEP 8等角度审查代码"""
     structured_llm = llm.with_structured_output(ReviewResult)
     result = structured_llm.invoke([
-        SystemMessage(content="你是资深Python代码规范专家，专查命名、PEP 8、类型注解、注释质量。"),
+        SystemMessage(content=(
+            "你是资深 Python 代码规范专家。审查代码中的风格问题。\n\n"
+            "核心原则：报告客观的风格违规，不报告个人偏好。\n\n"
+            "什么算客观违规：\n"
+            " - 确定。违反 PEP 8 明确规定（行太长、命名格式、空白符等）\n"
+            " - 确定。缺少必要的文档字符串或类型注解\n"
+            " - 不确定。这个命名不够好 → 仅当命名明显误导时报告，品味差异不报\n"
+            " - 不确定。这里可以更 Pythonic → 有明确 PEP 8/社区惯例支持则报，否则不报\n"
+            " - 无法确认是否为客观违规 → 不报告，宁漏勿错\n\n"
+            "按以下维度审查：\n"
+            "1. 命名 — snake_case / CamelCase 约定\n"
+            "2. 类型注解 — 公开函数是否缺少类型注解\n"
+            "3. 格式 — 行长度、空行、缩进\n"
+            "4. 注释 — 文档字符串缺失、注释与代码矛盾\n"
+            "5. 函数设计 — 函数过长、参数过多\n"
+            "6. 重复代码 — copy-paste 重复\n"
+            "7. 异常处理 — bare except / 捕获过宽\n\n"
+            "严重度：\n"
+            "- HIGH — 可能导致 bug 的风格问题（bare except、注释与代码矛盾）\n"
+            "- MEDIUM — 命名/格式违反 PEP 8\n"
+            "- LOW — 建议性改进\n\n"
+            "pep8_ref：违反 PEP 8 时填写条目编号如 \"E501\"。非 PEP 8 问题留空。\n\n"
+            "无确认问题 → issues 返回空列表 []。"
+        )),
         HumanMessage(content=f"代码结构：{state['code_analysis']}\n\n原始代码：{state['original_code']}"),
     ])
     # [Bug #5] LLM 返回 None 时兜底为空列表
